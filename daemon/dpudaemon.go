@@ -6,7 +6,9 @@ import (
 	"net"
 
 	"github.com/go-logr/logr"
+	deviceplugin "github.com/openshift/dpu-operator/daemon/device-plugin"
 	"github.com/openshift/dpu-operator/daemon/plugin"
+	pb2 "github.com/openshift/dpu-operator/tree/main/dpu-api/gen"
 	pb "github.com/opiproject/opi-api/network/evpn-gw/v1alpha1/gen/go"
 	"google.golang.org/grpc"
 	emptypb "google.golang.org/protobuf/types/known/emptypb"
@@ -15,24 +17,27 @@ import (
 
 type DpuDaemon struct {
 	pb.UnimplementedBridgePortServiceServer
+	pb2.UnimplementedDeviceServiceServer
 	vsp    plugin.VendorPlugin
+	dp     deviceplugin.DevicePlugin
 	log    logr.Logger
 	server *grpc.Server
 }
 
 func (s *DpuDaemon) CreateBridgePort(context context.Context, bpr *pb.CreateBridgePortRequest) (*pb.BridgePort, error) {
-	s.log.Info("Create Bridge Port", "req", bpr.BridgePort.Name)
-	return &pb.BridgePort{}, nil
+	bp, err := s.vsp.CreateBridgePort(bpr)
+	return bp, err
 }
 
 func (s *DpuDaemon) DeleteBridgePort(context context.Context, bpr *pb.DeleteBridgePortRequest) (*emptypb.Empty, error) {
-	s.log.Info("Delete Bridge Port", "req", bpr.Name)
-	return nil, nil
+	err := s.vsp.DeleteBridgePort(bpr)
+	return nil, err
 }
 
-func NewDpuDaemon(vsp plugin.VendorPlugin) *DpuDaemon {
+func NewDpuDaemon(vsp plugin.VendorPlugin, dp deviceplugin.DevicePlugin) *DpuDaemon {
 	return &DpuDaemon{
 		vsp: vsp,
+		dp:  dp,
 		log: ctrl.Log.WithName("DpuDaemon"),
 	}
 }
@@ -43,6 +48,12 @@ func (d *DpuDaemon) Start() {
 	if err != nil {
 		d.log.Error(err, "Failed to get addr:port from VendorPlugin")
 	}
+
+	err = d.dp.Start()
+	if err != nil {
+		d.log.Error(err, "device plugin call failed")
+	}
+
 	d.server = grpc.NewServer()
 	pb.RegisterBridgePortServiceServer(d.server, d)
 
@@ -59,6 +70,7 @@ func (d *DpuDaemon) Start() {
 			panic("Failed to listen")
 		}
 	}()
+	select {}
 }
 
 func (d *DpuDaemon) Stop() {
